@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>リサジュ曲線テーブル</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;overflow:hidden;font-family:'Inter',monospace;color:#fff}
+canvas{display:block}
+
+/* コントロールパネル */
+#controls{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:10;
+  display:flex;gap:16px;align-items:center;
+  background:rgba(10,10,15,0.85);backdrop-filter:blur(12px);
+  border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:12px 24px;
+}
+#controls label{font-size:11px;color:rgba(255,255,255,0.5);display:flex;flex-direction:column;gap:4px;align-items:center}
+#controls input[type="range"]{
+  width:100px;height:4px;-webkit-appearance:none;background:rgba(255,255,255,0.1);
+  border-radius:2px;outline:none;
+}
+#controls input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:14px;height:14px;border-radius:50%;
+  background:linear-gradient(135deg,#6366f1,#8b5cf6);cursor:pointer;border:2px solid rgba(255,255,255,0.3);
+}
+#controls button{
+  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);
+  color:rgba(255,255,255,0.7);font:11px monospace;padding:6px 14px;
+  border-radius:8px;cursor:pointer;transition:all 0.2s;
+}
+#controls button:hover{background:rgba(255,255,255,0.12);color:#fff}
+#controls button.active{background:rgba(99,102,241,0.2);border-color:rgba(99,102,241,0.4);color:#a5b4fc}
+.val{font-size:13px;font-weight:600;color:#c4b5fd;min-width:24px;text-align:center}
+#info{
+  position:fixed;top:16px;left:50%;transform:translateX(-50%);
+  color:rgba(255,255,255,0.2);font:12px monospace;pointer-events:none;
+}
+#palette-name{
+  position:fixed;top:16px;right:20px;
+  color:rgba(255,255,255,0.3);font:11px monospace;pointer-events:none;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">Lissajous Curve Table</div>
+<div id="palette-name"></div>
+<div id="controls">
+  <label>グリッド <span class="val" id="v-grid">6</span>
+    <input type="range" id="grid-size" min="2" max="10" value="6">
+  </label>
+  <label>速度 <span class="val" id="v-speed">1.0</span>
+    <input type="range" id="speed" min="1" max="30" value="10">
+  </label>
+  <label>線の太さ <span class="val" id="v-line">1.5</span>
+    <input type="range" id="line-width" min="5" max="30" value="15">
+  </label>
+  <label>軌跡の長さ <span class="val" id="v-trail">∞</span>
+    <input type="range" id="trail-len" min="0" max="100" value="0">
+  </label>
+  <button id="btn-pause">⏸ 停止</button>
+  <button id="btn-clear">🗑 クリア</button>
+  <button id="btn-palette">🎨 配色</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ── カラーパレット ──
+const PALETTES = [
+  { name: 'Neon', colors: ['#6366f1','#8b5cf6','#a855f7','#d946ef','#ec4899','#f43f5e','#fb923c','#facc15','#4ade80','#22d3ee'] },
+  { name: 'Ocean', colors: ['#0ea5e9','#06b6d4','#14b8a6','#22c55e','#0284c7','#0369a1','#0c4a6e','#164e63','#115e59','#047857'] },
+  { name: 'Fire', colors: ['#ef4444','#f97316','#f59e0b','#eab308','#dc2626','#b91c1c','#c2410c','#d97706','#ca8a04','#a16207'] },
+  { name: 'Pastel', colors: ['#c4b5fd','#fbcfe8','#a5f3fc','#bef264','#fde68a','#fca5a5','#d8b4fe','#f9a8d4','#99f6e4','#fcd34d'] },
+  { name: 'Mono', colors: ['#e2e8f0','#cbd5e1','#94a3b8','#64748b','#f1f5f9','#d1d5db','#9ca3af','#6b7280','#a8a29e','#78716c'] },
+];
+let paletteIdx = 0;
+let palette = PALETTES[0];
+
+// ── 状態 ──
+let W, H;
+let gridSize = 6;
+let speed = 1.0;
+let lineWidth = 1.5;
+let trailLen = 0; // 0 = infinite
+let angle = 0;
+let paused = false;
+let curves = []; // 各セルの軌跡ポイント
+
+// ── UI ──
+const gridSlider = document.getElementById('grid-size');
+const speedSlider = document.getElementById('speed');
+const lineSlider = document.getElementById('line-width');
+const trailSlider = document.getElementById('trail-len');
+const btnPause = document.getElementById('btn-pause');
+const btnClear = document.getElementById('btn-clear');
+const btnPalette = document.getElementById('btn-palette');
+const paletteName = document.getElementById('palette-name');
+
+function updatePaletteName() {
+  paletteName.textContent = palette.name;
+}
+updatePaletteName();
+
+gridSlider.oninput = () => {
+  gridSize = +gridSlider.value;
+  document.getElementById('v-grid').textContent = gridSize;
+  resetCurves();
+};
+speedSlider.oninput = () => {
+  speed = +speedSlider.value / 10;
+  document.getElementById('v-speed').textContent = speed.toFixed(1);
+};
+lineSlider.oninput = () => {
+  lineWidth = +lineSlider.value / 10;
+  document.getElementById('v-line').textContent = lineWidth.toFixed(1);
+};
+trailSlider.oninput = () => {
+  trailLen = +trailSlider.value;
+  document.getElementById('v-trail').textContent = trailLen === 0 ? '∞' : trailLen * 20;
+};
+btnPause.onclick = () => {
+  paused = !paused;
+  btnPause.textContent = paused ? '▶ 再生' : '⏸ 停止';
+  btnPause.classList.toggle('active', paused);
+};
+btnClear.onclick = () => { resetCurves(); angle = 0; };
+btnPalette.onclick = () => {
+  paletteIdx = (paletteIdx + 1) % PALETTES.length;
+  palette = PALETTES[paletteIdx];
+  updatePaletteName();
+};
+
+function resetCurves() {
+  curves = [];
+  for (let row = 0; row < gridSize; row++) {
+    curves[row] = [];
+    for (let col = 0; col < gridSize; col++) {
+      curves[row][col] = [];
+    }
+  }
+}
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+
+function getColor(i, total) {
+  const t = i / Math.max(total - 1, 1);
+  const idx = t * (palette.colors.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.min(lo + 1, palette.colors.length - 1);
+  const f = idx - lo;
+  const c1 = hexToRgb(palette.colors[lo]);
+  const c2 = hexToRgb(palette.colors[hi]);
+  return {
+    r: c1.r + (c2.r - c1.r) * f,
+    g: c1.g + (c2.g - c1.g) * f,
+    b: c1.b + (c2.b - c1.b) * f,
+  };
+}
+
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return { r, g, b };
+}
+
+function draw() {
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, W, H);
+
+  const n = gridSize;
+  // セルサイズ計算（上と左に円の列を残す）
+  const margin = 40;
+  const usable = Math.min(W, H) - margin * 2;
+  const cellSize = usable / (n + 1);
+  const circleR = cellSize * 0.38;
+  const offsetX = (W - usable) / 2 + margin;
+  const offsetY = (H - usable) / 2 + margin;
+
+  // ── 上の円（X軸振動）──
+  for (let col = 0; col < n; col++) {
+    const freq = col + 1;
+    const cx = offsetX + (col + 1.5) * cellSize;
+    const cy = offsetY + cellSize * 0.5;
+
+    // 円
+    ctx.beginPath();
+    ctx.arc(cx, cy, circleR, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // 回転する点
+    const px = cx + Math.cos(angle * freq) * circleR;
+    const py = cy + Math.sin(angle * freq) * circleR;
+    ctx.beginPath();
+    ctx.arc(px, py, 3, 0, Math.PI * 2);
+    const c = getColor(col, n);
+    ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+    ctx.fill();
+
+    // 垂直ガイドライン
+    ctx.beginPath();
+    ctx.moveTo(px, cy + circleR + 4);
+    ctx.lineTo(px, offsetY + (n + 1) * cellSize);
+    ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},0.06)`;
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+
+    // 周波数ラベル
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`×${freq}`, cx, cy - circleR - 6);
+  }
+
+  // ── 左の円（Y軸振動）──
+  for (let row = 0; row < n; row++) {
+    const freq = row + 1;
+    const cx = offsetX + cellSize * 0.5;
+    const cy = offsetY + (row + 1.5) * cellSize;
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, circleR, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    const px = cx + Math.cos(angle * freq) * circleR;
+    const py = cy + Math.sin(angle * freq) * circleR;
+    ctx.beginPath();
+    ctx.arc(px, py, 3, 0, Math.PI * 2);
+    const c = getColor(row, n);
+    ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+    ctx.fill();
+
+    // 水平ガイドライン
+    ctx.beginPath();
+    ctx.moveTo(cx + circleR + 4, py);
+    ctx.lineTo(offsetX + (n + 1) * cellSize, py);
+    ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},0.06)`;
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`×${freq}`, cx, cy - circleR - 6);
+  }
+
+  // ── グリッドセル背景 ──
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      const x = offsetX + (col + 1) * cellSize;
+      const y = offsetY + (row + 1) * cellSize;
+      ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(x, y, cellSize, cellSize);
+    }
+  }
+
+  // ── リサジュ曲線描画 ──
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      const freqX = col + 1;
+      const freqY = row + 1;
+
+      const cellX = offsetX + (col + 1) * cellSize;
+      const cellY = offsetY + (row + 1) * cellSize;
+      const cx = cellX + cellSize / 2;
+      const cy = cellY + cellSize / 2;
+      const r = cellSize * 0.4;
+
+      // 現在の点
+      const px = cx + Math.cos(angle * freqX) * r;
+      const py = cy + Math.sin(angle * freqY) * r;
+
+      // 軌跡に追加
+      if (!curves[row]) curves[row] = [];
+      if (!curves[row][col]) curves[row][col] = [];
+      if (!paused) {
+        curves[row][col].push({ x: px, y: py });
+        // 軌跡の長さ制限
+        if (trailLen > 0) {
+          const maxLen = trailLen * 20;
+          while (curves[row][col].length > maxLen) curves[row][col].shift();
+        }
+      }
+
+      const trail = curves[row][col];
+      if (trail.length < 2) continue;
+
+      // 曲線の色（行と列の混合）
+      const cCol = getColor(col, n);
+      const cRow = getColor(row, n);
+      const mixR = (cCol.r + cRow.r) / 2;
+      const mixG = (cCol.g + cRow.g) / 2;
+      const mixB = (cCol.b + cRow.b) / 2;
+
+      // 軌跡描画（フェード効果）
+      const segCount = trail.length - 1;
+      for (let i = 0; i < segCount; i++) {
+        const t = i / segCount;
+        const alpha = trailLen > 0 ? t * 0.8 + 0.05 : Math.min(0.7, 0.1 + t * 0.6);
+
+        ctx.beginPath();
+        ctx.moveTo(trail[i].x, trail[i].y);
+        ctx.lineTo(trail[i + 1].x, trail[i + 1].y);
+        ctx.strokeStyle = `rgba(${mixR},${mixG},${mixB},${alpha})`;
+        ctx.lineWidth = lineWidth;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+
+      // 現在の点
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgb(${mixR},${mixG},${mixB})`;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(px, py, 5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${mixR},${mixG},${mixB},0.2)`;
+      ctx.fill();
+    }
+  }
+
+  // 角度更新
+  if (!paused) {
+    angle += 0.02 * speed;
+  }
+
+  requestAnimationFrame(draw);
+}
+
+window.addEventListener('resize', resize);
+
+// キーボードショートカット
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); btnPause.click(); }
+  if (e.key === 'c') { btnClear.click(); }
+  if (e.key === 'p') { btnPalette.click(); }
+});
+
+resize();
+resetCurves();
+draw();
+</script>
+</body>
+</html>
